@@ -1,0 +1,85 @@
+---
+title: "Passage Analysis"
+output: word_document
+date: "2026-05-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(writexl)
+library(ggplot2)
+library(irr)
+library(scales)
+```
+
+
+```{r}
+gemini_similarity <- read_excel("gemini_3_flash/nih_project_similariy_score_gemini_3_flash.xlsx")
+
+gpt_similarity <- read_excel("gpt_5_mini/nih_project_similariy_score_gpt_5_mini.xlsx")
+```
+
+```{r}
+gemini_avg_sim <- gemini_similarity%>%
+  group_by(CiteID,Domain) %>%
+  summarise(
+    gemini_mean = mean(similarity),
+    gemini_median = median(similarity),
+    gemini_worst = min(similarity),
+    gemini_best = max(similarity))
+
+
+gpt_avg_sim <- gpt_similarity%>%
+  group_by(CiteID,Domain) %>%
+  summarise(
+    gpt_mean = mean(similarity),
+    gpt_median = median(similarity),
+    gpt_worst = min(similarity),
+    gpt_best = max(similarity))
+
+Passages_similarity <- gemini_avg_sim %>%
+  inner_join(gpt_avg_sim, by = c("Domain", "CiteID")) 
+
+
+
+write_xlsx(Passages_similarity, "Passages_similarity.xlsx")
+
+```
+
+
+```{r}
+#Sine it chooses and uses all 5 passages, the analysis can be on the best performing passage
+
+passages <- read_excel("Passages_similarity_best.xlsx")
+
+overall_GPT <- summary(passages$gpt_best)
+overall_Gemini <- summary(passages$gemini_best)
+
+
+domain_GPT <- passages %>% 
+  group_by(Domain) %>% 
+  summarise(
+    gpt_median = median(gpt_best, na.rm = TRUE),
+    gpt_IQR = paste(
+      quantile(gpt_best, probs = 0.25, na.rm = TRUE), 
+      "-", 
+      quantile(gpt_best, probs = 0.75, na.rm = TRUE)
+    )
+  )
+
+domain_Gemini <- passages %>% 
+  group_by(Domain) %>% 
+  summarise(
+    gemini_median = median(gemini_best, na.rm = TRUE),
+    gemini_IQR = paste(
+      quantile(gemini_best, probs = 0.25, na.rm = TRUE), 
+      "-", 
+      quantile(gemini_best, probs = 0.75, na.rm = TRUE)
+    )
+  )
+
+```

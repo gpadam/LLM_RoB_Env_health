@@ -1,0 +1,649 @@
+---
+title: "PICO Portal_RoB"
+output: word_document
+date: "2026-01-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(writexl)
+library(ggplot2)
+library(irr)
+library(scales)
+```
+
+## R Markdown
+
+
+
+```{r, eval=FALSE}
+#combine files
+Results <- read_excel("Results.xlsx")
+Human <- read_excel("Human.xlsx")
+GPT <- read_excel("GPT.xlsx")
+Gemini <- read_excel("Gemini.xlsx")
+Passages_results <- read_excel("ROB_passage_identification.xlsx")
+
+
+RoB <- Results %>%
+  inner_join(Human, by = c("Domain", "CiteID")) %>%
+  inner_join(GPT, by = c("Domain", "CiteID")) %>%
+  inner_join(Gemini, by = c("Domain", "CiteID")) %>%
+  inner_join(Passages_results, by = c("Domain", "CiteID"))
+write_xlsx(RoB, "RoB.xlsx")
+
+
+```
+
+```{r, echo=FALSE}
+RoB <- read_excel("RoB.xlsx")
+
+```
+
+```{r}
+RoB <- RoB %>%
+  mutate(gemini_comparison = case_when(
+    # Condition 1: Exact match
+    Human_consensus == gemini_response ~ 1,
+    
+    # Condition 2: Low/Probably Low combinations
+    (Human_consensus == "Low Risk" & gemini_response == "Probably Low Risk") |
+    (Human_consensus == "Probably Low Risk" & gemini_response == "Low Risk") ~ 2,
+    
+    # Condition 2: High/Probably High combinations
+    (Human_consensus == "High Risk" & gemini_response == "Probably High Risk") |
+    (Human_consensus == "Probably High Risk" & gemini_response == "High Risk") ~ 2,
+    
+    # If none of the above conditions are met, assign NA or another value
+    TRUE ~ 3
+  )) 
+
+data_human_rob_gemini<- RoB%>%
+group_by(Human_consensus) %>%
+summarise(count=length(gemini_comparison),
+pct_exact = round(sum(gemini_comparison==1)/length(gemini_comparison)*100,1),
+pct_accept = round(sum(gemini_comparison==2)/length(gemini_comparison)*100,1),
+pct_disagree = round(sum(gemini_comparison==3)/length(gemini_comparison)*100,1),
+pct_partial = pct_exact + pct_accept) 
+```
+
+```{r, echo=FALSE}
+#Percent agreement
+data_overall<- RoB%>%
+summarise(count=length(Comparison),
+pct_exact = round(sum(Comparison==1)/length(Comparison)*100,1),
+pct_accept = round(sum(Comparison==2)/length(Comparison)*100,1),
+pct_disagree = round(sum(Comparison==3)/length(Comparison)*100,1),
+pct_partial = pct_exact + pct_accept) 
+
+data_domain<- RoB%>%
+group_by(Domain) %>%
+summarise(count=length(Comparison),
+pct_exact = round(sum(Comparison==1)/length(Comparison)*100,1),
+pct_accept = round(sum(Comparison==2)/length(Comparison)*100,1),
+pct_disagree = round(sum(Comparison==3)/length(Comparison)*100,1),
+pct_partial = pct_exact + pct_accept) 
+
+data_human_rob<- RoB%>%
+group_by(Human_consensus) %>%
+summarise(count=length(Comparison),
+pct_exact = round(sum(Comparison==1)/length(Comparison)*100,1),
+pct_accept = round(sum(Comparison==2)/length(Comparison)*100,1),
+pct_disagree = round(sum(Comparison==3)/length(Comparison)*100,1),
+pct_partial = pct_exact + pct_accept) 
+
+data_study_rob<- RoB%>%
+group_by(CiteID) %>%
+summarise(count=length(Comparison),
+pct_exact = round(sum(Comparison==1)/length(Comparison)*100,1),
+pct_accept = round(sum(Comparison==2)/length(Comparison)*100,1),
+pct_disagree = round(sum(Comparison==3)/length(Comparison)*100,1),
+pct_partial = pct_exact + pct_accept) 
+
+```
+
+```{r, echo=FALSE}
+accuracy_gpt <- read_excel("accuracy_gpt.xlsx")
+
+accuracy_gpt_long <- accuracy_gpt %>%
+  select(breakdown, count, pct_exact, pct_accept, pct_disagree) %>%
+  pivot_longer(
+    cols = starts_with("pct_"),
+    names_to = "match_type",
+    values_to = "percent"
+  ) %>%
+  mutate(
+    n = round(percent / 100 * count),
+    match_type = recode(
+      match_type,
+      pct_exact = "Exact match",
+      pct_accept = "Partial match",
+      pct_disagree = "Disagreement"
+    ),
+    match_type = factor(
+      match_type,
+      levels = c("Disagreement", "Partial match", "Exact match")
+    ),
+    breakdown = factor(breakdown, levels = unique(breakdown))
+  )
+
+plot1 <- ggplot(accuracy_gpt_long, aes(x = breakdown, y = percent, fill = match_type)) +
+  geom_col(width = 0.75) +
+  geom_text(
+  data = subset(accuracy_gpt_long, percent >= 3.5),  # hides labels in tiny segments
+  aes(label = paste0(percent, "%\n(n=", n, ")"), group = match_type),
+  position = position_stack(vjust = 0.5),
+  size = 2.8,
+  color = "white",
+  fontface = "bold"
+  ) +
+  scale_fill_manual(
+  values = c(
+      "Exact match" = "#2166ac",
+      "Partial match" = "#e6a817",
+      "Disagreement" = "#c0392b"
+  )
+  ) +
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(
+  breaks = seq(0, 100, 20),
+  expand = c(0, 0)
+) +
+coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = NULL,
+    y = "Percent",
+    fill = NULL
+  ) +
+  geom_vline(xintercept = c(1.5,9.5)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+plot1
+```
+
+
+```{r, echo=FALSE}
+accuracy_gemini <- read_excel("accuracy_gemini.xlsx")
+
+accuracy_gemini_long <- accuracy_gemini %>%
+  select(breakdown, count, pct_exact, pct_accept, pct_disagree) %>%
+  pivot_longer(
+    cols = starts_with("pct_"),
+    names_to = "match_type",
+    values_to = "percent"
+  ) %>%
+  mutate(
+    n = round(percent / 100 * count),
+    match_type = recode(
+      match_type,
+      pct_exact = "Exact match",
+      pct_accept = "Partial match",
+      pct_disagree = "Disagreement"
+    ),
+    match_type = factor(
+      match_type,
+      levels = c("Disagreement", "Partial match", "Exact match")
+    ),
+    breakdown = factor(breakdown, levels = unique(breakdown))
+  )
+
+plot1.5 <- ggplot(accuracy_gemini_long, aes(x = breakdown, y = percent, fill = match_type)) +
+  geom_col(width = 0.75) +
+  geom_text(
+  data = subset(accuracy_gemini_long, percent >= 3.5),  # hides labels in tiny segments
+  aes(label = paste0(percent, "%\n(n=", n, ")"), group = match_type),
+  position = position_stack(vjust = 0.5),
+  size = 2.8,
+  color = "white",
+  fontface = "bold"
+  ) +
+  scale_fill_manual(
+  values = c(
+      "Exact match" = "#2166ac",
+      "Partial match" = "#e6a817",
+      "Disagreement" = "#c0392b"
+  )
+  ) +
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(
+  breaks = seq(0, 100, 20),
+  expand = c(0, 0)
+) +
+coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = NULL,
+    y = "Percent",
+    fill = NULL
+  ) +
+  geom_vline(xintercept = c(1.5,9.5)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+plot1.5
+```
+
+```{r, echo=FALSE}
+#How often is AI more conservative
+RoB2 <- RoB%>%
+  mutate(Consensus_ROB=case_when(
+    .$Human_consensus=="Low Risk" ~ 1,
+    .$Human_consensus=="Probably Low Risk" ~ 2,
+    .$Human_consensus=="Probably High Risk" ~ 3,
+    .$Human_consensus=="High Risk" ~ 4))%>%
+  mutate(Human_1_ROB=case_when( 
+    .$Human__1=="Low Risk" ~ 1,
+    .$Human__1=="Probably Low Risk" ~ 2,
+    .$Human__1=="Probably High Risk" ~ 3,
+    .$Human__1=="High Risk" ~ 4))%>%
+  mutate(Human_2_ROB=case_when(   
+    .$Human_2=="Low Risk" ~ 1,
+    .$Human_2=="Probably Low Risk" ~ 2,
+    .$Human_2=="Probably High Risk" ~ 3,
+    .$Human_2=="High Risk" ~ 4))%>%
+  mutate(GPT_ROB=case_when(
+    .$gpt_response=="Low Risk" ~ 1,
+    .$gpt_response=="Probably Low Risk" ~ 2,
+    .$gpt_response=="Probably High Risk" ~ 3,
+    .$gpt_response=="High Risk" ~ 4
+    ))%>%
+  mutate(Gemini_ROB=case_when(
+    .$gemini_response=="Low Risk" ~ 1,
+    .$gemini_response=="Probably Low Risk" ~ 2,
+    .$gemini_response=="Probably High Risk" ~ 3,
+    .$gemini_response=="High Risk" ~ 4
+    ))
+  
+  Conservative_GPT <- RoB2%>%
+  mutate(GPT_conservative=case_when(
+    .$Consensus_ROB==GPT_ROB ~ "same",
+    .$Consensus_ROB>GPT_ROB ~ "GPT less conservative",
+    .$Consensus_ROB<GPT_ROB ~ "GPT more conservative"))
+
+Conservative_Gemini <- RoB2%>%
+  mutate(Gemini_conservative=case_when(
+    .$Consensus_ROB==Gemini_ROB ~ "same",
+    .$Consensus_ROB>Gemini_ROB ~ "Gemini less conservative",
+    .$Consensus_ROB<Gemini_ROB ~ "Gemini more conservative"))
+
+counts_GPT <- as.data.frame(table(Conservative_GPT$GPT_conservative))
+colnames(counts_GPT) <- c("GPT_conservative", "count")
+counts_GPT <- counts_GPT %>%
+  arrange(desc(GPT_conservative)) %>%  # order for nicer layout
+  mutate(
+    fraction = count / sum(count),
+    ymax = cumsum(fraction),
+    ymin = lag(ymax, default = 0),
+    label_pos = (ymax + ymin) / 2,
+    percent = round(fraction * 100, 1),
+    label = paste0(GPT_conservative, "\n", percent, "%")
+  )
+
+counts_Gemini <- as.data.frame(table(Conservative_Gemini$Gemini_conservative))
+colnames(counts_Gemini) <- c("Gemini_conservative", "count")
+counts_Gemini <- counts_Gemini %>%
+  arrange(desc(Gemini_conservative)) %>%  # order for nicer layout
+  mutate(
+    fraction = count / sum(count),
+    ymax = cumsum(fraction),
+    ymin = lag(ymax, default = 0),
+    label_pos = (ymax + ymin) / 2,
+    percent = round(fraction * 100, 1),
+    label = paste0(Gemini_conservative, "\n", percent, "%")
+  )
+
+plot2 <- ggplot(counts_GPT, aes(ymax = ymax, ymin = ymin, xmax = 1, xmin = 0,
+                   fill = GPT_conservative)) +
+  geom_rect() +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(
+      x = ifelse(percent < 5, 1.1, 0.6),
+      y = label_pos,
+      label = label
+    ),
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "same" = "#88CCAA",
+      "GPT more conservative" = "cadetblue1",
+      "GPT less conservative" = "red4"
+    )) +
+  xlim(0, 1.2) +
+  theme_void() +
+  theme(legend.position = "none") 
+
+plot2
+
+plot2.5 <- ggplot(counts_Gemini, aes(ymax = ymax, ymin = ymin, xmax = 1, xmin = 0,
+                   fill = Gemini_conservative)) +
+  geom_rect() +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(
+      x = ifelse(percent < 5, 1.1, 0.6),
+      y = label_pos,
+      label = label
+    ),
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "same" = "#88CCAA",
+      "Gemini more conservative" = "cadetblue1",
+      "Gemini less conservative" = "red4"
+    )) +
+  xlim(0, 1.2) +
+  theme_void() +
+  theme(legend.position = "none") 
+
+plot2.5
+
+```
+
+
+```{r, echo=FALSE}
+#Percent agreement and Cohens Kappa for exact match
+
+RoB2$Human_consensus <- factor(RoB2$Human_consensus)
+RoB2$gpt_response <- factor(RoB2$gpt_response)
+RoB2$gemini_response <- factor(RoB2$gemini_response)
+RoB2$Human_1 <- factor(RoB2$Human__1)
+RoB2$Human_2 <- factor(RoB2$Human_2)
+
+RoB2$GPT_matches_any <- ifelse(
+  RoB2$GPT_ROB == RoB2$Consensus_ROB |
+  RoB2$GPT_ROB == RoB2$Human_1_ROB |
+  RoB2$GPT_ROB == RoB2$Human_2_ROB,
+  1, 0
+)
+
+RoB2$Gemini_matches_any <- ifelse(
+  RoB2$Gemini_ROB == RoB2$Consensus_ROB |
+  RoB2$Gemini_ROB == RoB2$Human_1_ROB |
+  RoB2$Gemini_ROB == RoB2$Human_2_ROB,
+  1, 0
+)
+
+RoB2$GPT_1human <- ifelse(
+  RoB2$GPT_matches_any != RoB2$Consensus_ROB,
+  1, 0
+)
+
+RoB2$Gemini_1human <- ifelse(
+  RoB2$Gemini_matches_any != RoB2$Consensus_ROB,
+  1, 0
+)
+
+RoB2$GPT_matches_consensus <- ifelse(
+  RoB2$GPT_ROB == RoB2$Consensus_ROB, 1,0)
+
+RoB2$gemini_matches_consensus <- ifelse(
+  RoB2$Gemini_ROB == RoB2$Consensus_ROB, 1,0)
+
+
+#Percent exact match with any human label
+round((sum(RoB2$GPT_matches_any,na.rm = T))/(length(RoB2$GPT_matches_any)-sum(is.na(RoB2$GPT_matches_any)))*100,1)
+
+round((sum(RoB2$Gemini_matches_any,na.rm = T))/(length(RoB2$Gemini_matches_any)-sum(is.na(RoB2$Gemini_matches_any)))*100,1)
+
+#Percent of that match with any human label but not the consensus
+round((sum(RoB2$GPT_1human,na.rm = T))/(sum(RoB2$GPT_matches_any,na.rm = T))*100,1)
+
+round((sum(RoB2$Gemini_1human,na.rm = T))/(sum(RoB2$Gemini_matches_any,na.rm = T))*100,1)
+
+
+#GPT consensus kappa
+kappa2(RoB2[,c(11,13)],weight = "squared") 
+
+#Gemini consensus kappa
+kappa2(RoB2[,c(11,15)],weight = "squared") 
+
+#human 1 consesnsus kappa
+kappa2(RoB2[,c(9,11)],weight = "squared") 
+
+#human 2 consesnsus kappa
+kappa2(RoB2[,c(10,11)],weight = "squared") 
+
+#human human kappa
+kappa2(RoB2[,c(9,10)],weight = "squared") 
+
+
+#write_xlsx(RoB2, "RoB2.xlsx")
+
+```
+
+
+```{r}
+#Percent agreement and Cohens Kappa for partial match
+RoB3 <- RoB2%>%
+  mutate(Consensus_ROB_partial=case_when(
+    .$Human_consensus=="Low Risk" ~ "low",
+    .$Human_consensus=="Probably Low Risk" ~ "low",
+    .$Human_consensus=="Probably High Risk" ~ "high",
+    .$Human_consensus=="High Risk" ~ "high"))%>%
+  mutate(Human_1_ROB_partial=case_when( 
+    .$Human__1=="Low Risk" ~ "low",
+    .$Human__1=="Probably Low Risk" ~ "low",
+    .$Human__1=="Probably High Risk" ~ "high",
+    .$Human__1=="High Risk" ~ "high"))%>%
+  mutate(Human_2_ROB_partial=case_when(   
+    .$Human_2=="Low Risk" ~ "low",
+    .$Human_2=="Probably Low Risk" ~ "low",
+    .$Human_2=="Probably High Risk" ~ "high",
+    .$Human_2=="High Risk" ~ "high"))%>%
+  mutate(GPT_ROB_partial=case_when(
+    .$gpt_response=="Low Risk" ~ "low",
+    .$gpt_response=="Probably Low Risk" ~ "low",
+    .$gpt_response=="Probably High Risk" ~ "high",
+    .$gpt_response=="High Risk" ~ "high"
+    ))%>%
+  mutate(Gemini_ROB_partial=case_when(
+    .$gemini_response=="Low Risk" ~ "low",
+    .$gemini_response=="Probably Low Risk" ~ "low",
+    .$gemini_response=="Probably High Risk" ~ "high",
+    .$gemini_response=="High Risk" ~ "high"
+    ))
+
+
+
+RoB3$Consensus_ROB_partial <- factor(RoB3$Consensus_ROB_partial)
+RoB3$GPT_ROB_partial <- factor(RoB3$GPT_ROB_partial)
+RoB3$Human_1_ROB_partial <- factor(RoB3$Human_1_ROB_partial)
+RoB3$Human_2_ROB_partial <- factor(RoB3$Human_2_ROB_partial)
+
+RoB3$GPT_matches_any_partial <- ifelse(
+  RoB3$GPT_ROB_partial == RoB3$Consensus_ROB_partial |
+  RoB3$GPT_ROB_partial == RoB3$Human_1_ROB_partial |
+  RoB3$GPT_ROB_partial == RoB3$Human_2_ROB_partial,
+  1, 0
+)
+RoB3$Gemini_matches_any_partial <- ifelse(
+  RoB3$Gemini_ROB_partial == RoB3$Consensus_ROB_partial |
+  RoB3$Gemini_ROB_partial == RoB3$Human_1_ROB_partial |
+  RoB3$Gemini_ROB_partial == RoB3$Human_2_ROB_partial,
+  1, 0
+)
+
+RoB3$GPT_human1_partial <- ifelse(
+  RoB3$GPT_ROB_partial != RoB3$Consensus_ROB_partial &
+  RoB3$GPT_ROB_partial == RoB3$Human_1_ROB_partial,
+  1, 0
+)
+
+RoB3$GPT_human2_partial <- ifelse(
+  RoB3$GPT_ROB_partial != RoB3$Consensus_ROB_partial &
+  RoB3$GPT_ROB_partial == RoB3$Human_2_ROB_partial,
+  1, 0
+)
+
+RoB3$Gemini_human1_partial <- ifelse(
+  RoB3$Gemini_ROB_partial != RoB3$Consensus_ROB_partial &
+  RoB3$Gemini_ROB_partial == RoB3$Human_1_ROB_partial,
+  1, 0
+)
+  
+RoB3$Gemini_human2_partial <- ifelse(
+  RoB3$Gemini_ROB_partial != RoB3$Consensus_ROB_partial &
+  RoB3$Gemini_ROB_partial == RoB3$Human_2_ROB_partial,
+  1, 0
+)
+
+RoB3$GPT_1human_partial <- ifelse(
+  RoB3$GPT_human1_partial == 1 |
+  RoB3$GPT_human2_partial == 1,
+  1, 0
+)
+
+RoB3$Gemini_1human_partial <- ifelse(
+  RoB3$Gemini_human1_partial == 1 |
+  RoB3$Gemini_human2_partial == 1,
+  1, 0
+)
+
+#Percent partial match with any human label
+round((sum(RoB3$GPT_matches_any_partial,na.rm = T))/(length(RoB3$GPT_matches_any_partial)-sum(is.na(RoB3$GPT_matches_any_partial)))*100,1)
+
+round((sum(RoB3$Gemini_matches_any_partial,na.rm = T))/(length(RoB3$Gemini_matches_any_partial)-sum(is.na(RoB3$Gemini_matches_any_partial)))*100,1)
+
+#Percent of those that match with any human label but not the consensus
+round((sum(RoB3$GPT_1human_partial,na.rm = T))/(sum(RoB3$GPT_matches_any_partial,na.rm = T))*100,1)
+
+round((sum(RoB3$Gemini_1human_partial,na.rm = T))/(sum(RoB3$Gemini_matches_any_partial,na.rm = T))*100,1)
+
+
+#GPT consensus kappa
+kappa2(RoB3[,c(30,27)],weight = "squared")
+
+#Gemini consensus kappa
+kappa2(RoB3[,c(31,27)],weight = "squared")
+
+#human 1 consesnsus kappa
+kappa2(RoB3[,c(28,27)],weight = "squared") 
+
+#human 2 consesnsus kappa
+kappa2(RoB3[,c(29,22)],weight = "squared") 
+
+#human human kappa
+kappa2(RoB3[,c(28,29)],weight = "squared") 
+
+#write_xlsx(RoB3, "RoB3.xlsx")
+
+```
+
+```{r}
+#Percent agreement humans - Exact
+human1_consensus<- RoB%>%
+summarise(count=length(Human_consensus),
+pct_exact = round(sum(Human__1==Human_consensus)/length(Human_consensus)*100,1))
+
+human2_consensus<- RoB%>%
+summarise(count=length(Human_consensus),
+pct_exact = round(sum(Human_2==Human_consensus)/length(Human_consensus)*100,1))
+
+humans<- RoB%>%
+summarise(count=length(Human_consensus),
+pct_exact = round(sum(Human_2==Human__1)/length(Human__1)*100,1))
+
+
+
+
+#Percent agreement humans - Partial
+human1_consensus_pt<- RoB3%>%
+summarise(count=length(Consensus_ROB_partial),
+pct_exact = round(sum(factor(Human_1_ROB_partial)==factor(Consensus_ROB_partial))/length(Consensus_ROB_partial)*100,1))
+
+
+human2_consensus_pt <- RoB3 %>%
+  summarise(
+    count = length(Consensus_ROB_partial),
+    pct_exact = round(
+      sum(factor(Human_2_ROB_partial) == factor(Consensus_ROB_partial), na.rm = TRUE) /
+      length(Consensus_ROB_partial) * 100, 1
+    )
+  )
+
+
+humans_pt <- RoB3 %>%
+  summarise(
+    count = length(Human_1_ROB_partial),
+    pct_exact = round(
+      sum(factor(Human_2_ROB_partial) == factor(Human_1_ROB_partial), na.rm = TRUE) /
+      length(Human_1_ROB_partial) * 100, 1
+    )
+  )
+```
+
+```{r}
+#plot by study
+data_study_rob
+
+study_long <- data_study_rob %>%
+  select(CiteID, pct_exact, pct_accept, pct_disagree) %>%
+  pivot_longer(
+    cols = starts_with("pct_"),
+    names_to = "match_type",
+    values_to = "percent"
+  ) %>%
+  mutate(
+    match_type = recode(
+      match_type,
+      pct_exact = "Exact match",
+      pct_accept = "Partial match",
+      pct_disagree = "Disagreement"
+    ),
+    match_type = factor(
+      match_type,
+      levels = c("Disagreement", "Partial match", "Exact match")
+    ),
+    CiteID = factor(CiteID, levels = unique(CiteID))
+  )
+
+
+plot3 <- ggplot(study_long, aes(x = CiteID, y = percent, fill = match_type)) +
+  geom_col(width = 0.75) +
+  scale_fill_manual(
+    values = c(
+      "Exact match" = "#1f6b2a",
+      "Partial match" = "gold3",
+      "Disagreement" = "red4"
+    )
+  ) +
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(
+  breaks = seq(0, 100, 20),
+  expand = c(0, 0)
+) +
+coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = NULL,
+    y = "Percent",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size=8),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+plot3
+
+
+```

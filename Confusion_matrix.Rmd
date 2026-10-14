@@ -1,0 +1,198 @@
+---
+title: "Confusion_matrices"
+output: word_document
+date: "2026-07-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(caret)
+library(dplyr)
+library(irrCAC)
+library(caret)
+library(boot)
+library(purrr)
+library(flextable)
+```
+
+```{r}
+RoB <- read_excel("RoB.xlsx")
+
+
+```
+
+
+```{r exact match}
+
+
+all_levels <- c("Low Risk", "Probably Low Risk", "Probably High Risk",
+                 "High Risk", "Not Applicable")
+
+RoB1.5 <- RoB %>%
+  mutate(across(c(Human_consensus, gpt_response, gemini_response, Human__1, Human_2),
+                ~trimws(.x))) %>%
+  mutate(across(c(Human_consensus, gpt_response, gemini_response, Human__1, Human_2),
+                ~factor(.x, levels = all_levels)))
+
+# sanity checks
+setdiff(unique(RoB1.5$gpt_response), all_levels)
+setdiff(unique(RoB1.5$Human_consensus), all_levels)
+
+# both sides from RoB1.5
+cm_gpt <- confusionMatrix(RoB1.5$gpt_response, RoB1.5$Human_consensus)
+cm_gemini <- confusionMatrix(RoB1.5$gemini_response, RoB1.5$Human_consensus)
+cm_human1 <- confusionMatrix(RoB1.5$Human__1, RoB1.5$Human_consensus)
+cm_human2 <- confusionMatrix(RoB1.5$Human_2, RoB1.5$Human_consensus)
+
+
+print_cm_flex <- function(cm, title) {
+  df <- as.data.frame.matrix(cm$table)
+  df <- cbind(Predicted = rownames(df), df)
+  ft <- flextable(df)
+  ft <- set_caption(ft, title)
+  ft <- autofit(ft)
+  ft
+}
+
+print_cm_flex(cm_gpt, "GPT vs Human Consensus")
+print_cm_flex(cm_gemini, "Gemini vs Human Consensus")
+print_cm_flex(cm_human1, "Human 1 vs Human Consensus")
+print_cm_flex(cm_human2, "Human 2 vs Human Consensus")
+```
+
+```{r}
+
+
+compare_cols <- c("gpt_response", "gemini_response", "Human__1", "Human_2")
+
+RoB2 <- RoB %>%
+  mutate(across(c(Human_consensus, all_of(compare_cols)),
+                ~na_if(trimws(.x), "Not Applicable")))
+
+ordinal_levels <- c("Low Risk", "Probably Low Risk",
+                     "Probably High Risk", "High Risk")
+
+get_agreement_stats <- function(data, test_col, ref_col = "Human_consensus",
+                                 levels = ordinal_levels, n_boot = 2000) {
+
+  d <- data %>%
+    select(all_of(c(test_col, ref_col))) %>%
+    filter(!is.na(.data[[test_col]]), !is.na(.data[[ref_col]]))
+
+  ratings <- data.frame(
+    test = as.numeric(factor(d[[test_col]], levels = levels)),
+    ref  = as.numeric(factor(d[[ref_col]],  levels = levels))
+  )
+
+  # Percent agreement and Gwet's AC2 — both take raw ratings directly
+  pa_res  <- pa.coeff.raw(ratings, weights = "unweighted")$est
+  ac2_res <- gwet.ac1.raw(ratings, weights = "quadratic")$est
+
+  # Weighted Cohen's kappa needs a contingency table, not raw ratings
+  tab <- table(factor(d[[test_col]], levels = levels),
+               factor(d[[ref_col]],  levels = levels))
+  kappa_res <- kappa2.table(tab, weights = quadratic.weights(1:length(levels)))
+  kappa_ci  <- as.numeric(unlist(strsplit(gsub("[()]", "", kappa_res$coeff.ci), ",")))
+
+  # F1 (macro), bootstrapped since there's no closed-form CI
+f1_macro <- function(dat, idx) {
+  dd <- dat[idx, ]
+  cm <- caret::confusionMatrix(
+    factor(dd$test, levels = seq_along(levels)),
+    factor(dd$ref,  levels = seq_along(levels))
+  )
+
+  if (is.matrix(cm$byClass)) {
+    mean(cm$byClass[, "F1"], na.rm = TRUE) 
+  } else {
+    # 2-class case: byClass is a named vector, not a matrix
+    cm$byClass[["F1"]]
+  }
+}
+  f1_point <- f1_macro(ratings, seq_len(nrow(ratings)))
+  f1_boot  <- boot(ratings, f1_macro, R = n_boot)
+  f1_ci    <- boot.ci(f1_boot, type = "perc")$percent[4:5]
+
+  tibble::tibble(
+    comparison    = test_col,
+    n             = nrow(d),
+    pct_agree     = pa_res$pa,          pct_agree_lci = pa_res$conf.int[1], pct_agree_uci = pa_res$conf.int[2],
+    ac2           = ac2_res$coeff.val,  ac2_lci       = ac2_res$conf.int[1], ac2_uci      = ac2_res$conf.int[2],
+    kappa_w       = kappa_res$coeff.val, kappa_w_lci  = kappa_ci[1],         kappa_w_uci  = kappa_ci[2],
+    f1_macro      = f1_point,           f1_lci        = f1_ci[1],            f1_uci       = f1_ci[2]
+  )
+}
+
+results <- map_dfr(compare_cols, ~get_agreement_stats(RoB2, .x))
+
+results_rounded <- results %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+flextable(results_rounded) %>%
+  autofit() %>%
+  set_caption("Agreement Statistics by Comparison")
+```
+
+Percent agreement (pct_agree)
+The raw proportion of cases where the rater matched the gold standard exactly. Simple and intuitive, but doesn't account for agreement that could happen by chance alone — so it tends to look inflated when one category (e.g. "Low Risk") dominates the data, as yours likely does.
+
+Gwet's AC2 (ac2)
+A chance-corrected agreement measure like kappa, but more stable when categories are imbalanced (kappa can paradoxically look low even with high raw agreement if most ratings fall in one category — known as the "kappa paradox"). Values are interpreted on roughly the same scale as kappa:
+
+< 0.20: poor
+0.21–0.40: fair
+0.41–0.60: moderate
+0.61–0.80: substantial
+0.81–1.00: almost perfect
+
+Weighted Cohen's kappa, quadratic weights (kappa_w)
+Also chance-corrected, but additionally penalizes disagreements based on how far apart the categories are on the ordinal scale (e.g. "Low Risk" vs. "High Risk" counts as a bigger miss than "Low Risk" vs. "Probably Low Risk"). Same benchmark scale as above applies. More sensitive than AC2 to category imbalance, so if kappa and AC2 diverge substantially, that's usually the imbalance showing up.
+
+Macro F1 (f1_macro)
+The average of per-category F1 scores (harmonic mean of precision and recall), unweighted by category size — so rare categories count just as much as common ones. This makes it a useful check on whether a rater is doing well specifically on the harder-to-detect categories (e.g. "Probably High Risk"), not just doing well overall by riding the majority class. Ranges 0–1, higher is better; no universal benchmark scale like kappa has, so it's most useful for comparing raters against each other rather than against a fixed threshold.
+
+If it'd help, I can also add a line to your results table flagging when kappa/AC2 fall into different benchmark categories (e.g. "moderate" vs "substantial"), so it reads automatically rather than needing manual lookup.
+
+```{r partial match}
+# --- Collapse categories into binary Low/High ---
+collapse_risk <- function(x) {
+  dplyr::case_when(
+    x %in% c("Low Risk", "Probably Low Risk")   ~ "Low Risk",
+    x %in% c("Probably High Risk", "High Risk") ~ "High Risk",
+    x == "Not Applicable" ~ NA_character_,
+    TRUE ~ x
+  )
+}
+
+binary_levels <- c("Low Risk", "High Risk")
+
+RoB_binary <- RoB %>%
+  mutate(across(c(Human_consensus, gpt_response, gemini_response, Human__1, Human_2),
+                ~collapse_risk(trimws(.x)))) %>%
+  mutate(across(c(Human_consensus, gpt_response, gemini_response, Human__1, Human_2),
+                ~factor(.x, levels = binary_levels)))
+
+cm_gpt_binary <- confusionMatrix(RoB_binary$gpt_response, RoB_binary$Human_consensus)
+cm_gemini_binary <- confusionMatrix(RoB_binary$gemini_response, RoB_binary$Human_consensus)
+cm_human1_binary <- confusionMatrix(RoB_binary$Human__1, RoB_binary$Human_consensus)
+cm_human2_binary <- confusionMatrix(RoB_binary$Human_2, RoB_binary$Human_consensus)
+
+print_cm_flex(cm_gpt_binary, "GPT vs Human Consensus (partial agreement)")
+print_cm_flex(cm_gemini_binary, "Gemini vs Human Consensus (partial agreement)")
+print_cm_flex(cm_human1_binary, "Human 1 vs Human Consensus (partial agreement)")
+print_cm_flex(cm_human2_binary, "Human 2 vs Human Consensus (partial agreement)")
+
+results_binary <- map_dfr(
+  compare_cols,
+  ~get_agreement_stats(RoB_binary, .x, levels = binary_levels)
+)
+
+flextable(results_binary) %>%
+  autofit() %>%
+  set_caption("Agreement Statistics by Comparison (Partial agreement)")
+```
